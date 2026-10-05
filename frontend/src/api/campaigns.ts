@@ -45,6 +45,7 @@ export interface EmailRow {
   failedAt: string | null;
   errorMessage: string | null;
   attemptCount: number;
+  campaign: { subject: string; name: string };
 }
 
 export interface EmailsPage {
@@ -77,6 +78,17 @@ export async function fetchCampaignEmails(
 ): Promise<EmailsPage> {
   const res = await api.get<EmailsPage>(`/campaigns/${campaignId}/emails`, {
     params: { page, limit },
+  });
+  return res.data;
+}
+
+export async function fetchEmails(
+  view: 'scheduled' | 'sent',
+  page = 1,
+  limit = 50,
+): Promise<EmailsPage> {
+  const res = await api.get<EmailsPage>('/emails', {
+    params: { view, page, limit },
   });
   return res.data;
 }

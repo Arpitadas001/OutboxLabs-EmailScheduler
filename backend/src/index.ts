@@ -6,9 +6,14 @@ import RedisStore from 'connect-redis';
 import { env } from './config/env';
 import authRouter from './routes/auth';
 import campaignsRouter from './routes/campaigns';
+import emailsRouter from './routes/emails';
 import csvRouter from './routes/csv';
+import searchRouter from './routes/search';
+import queueDashboardRouter from './routes/queueDashboard';
 import { startEmailWorker } from './worker/emailWorker';
 import { reconcileOnStartup } from './lib/reconciler';
+import { ensureEmailIndex, reindexAllEmails } from './lib/emailSearch';
+import slackRouter from './routes/slack';
 
 /**
  * Express application bootstrap.
@@ -66,7 +71,11 @@ async function bootstrap() {
   // ── Routes ───────────────────────────────────────────────────────────────────
   app.use('/auth', authRouter);
   app.use('/campaigns', campaignsRouter);
+  app.use('/emails', emailsRouter);
   app.use('/csv', csvRouter);
+  app.use('/search', searchRouter);
+  app.use('/slack', slackRouter);
+  app.use('/admin/queues', queueDashboardRouter);
 
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok', message: 'Backend is up' });
@@ -96,6 +105,11 @@ async function bootstrap() {
   // Run the startup reconciler AFTER the worker is listening so that
   // any jobs re-queued immediately (delay=0) will be picked up right away.
   await reconcileOnStartup();
+
+  void ensureEmailIndex()
+    .then(reindexAllEmails)
+    .then(() => console.log('[Elasticsearch] Email index is ready and synchronized.'))
+    .catch((err: unknown) => console.error('[Elasticsearch] Startup indexing failed:', err));
 }
 
 bootstrap().catch((err) => {

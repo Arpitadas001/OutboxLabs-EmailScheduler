@@ -1,0 +1,9 @@
+email
+valid1@example.com
+not-an-email
+valid2@example.com
+missing@domain
+valid3@example.com
+valid1@example.com
+valid4@example.com
+valid2@example.com

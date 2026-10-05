@@ -23,8 +23,10 @@ import { createRedisConnection } from './redis';
  *     exponential back-off (5 s, 10 s, 20 s).  The worker re-throws on failure
  *     so BullMQ schedules the retry automatically.
  */
+export const emailQueueConnection = createRedisConnection();
+
 export const emailQueue = new Queue('email', {
-  connection: createRedisConnection(),
+  connection: emailQueueConnection,
   defaultJobOptions: {
     removeOnComplete: { count: 1000 },
     removeOnFail:    { count: 5000 },

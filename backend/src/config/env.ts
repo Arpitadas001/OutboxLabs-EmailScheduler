@@ -35,10 +35,11 @@ const envSchema = z.object({
   SLACK_REDIRECT_URI: z.string().optional(),
 
   // Worker
-  WORKER_CONCURRENCY: z.string().default('5'),
-  WORKER_RATE_MAX: z.string().default('10'),
-  MIN_SEND_DELAY_MS: z.string().default('1000'),
-  MAX_EMAILS_PER_HOUR_PER_SENDER: z.string().default('100'),
+  WORKER_CONCURRENCY: z.coerce.number().int().positive().default(5),
+  MIN_DELAY_BETWEEN_EMAILS_MS: z.coerce.number().int().nonnegative().default(
+    Number(process.env.MIN_DELAY_BETWEEN_EMAILS_MS ?? process.env.MIN_SEND_DELAY_MS ?? 1000),
+  ),
+  MAX_EMAILS_PER_HOUR_PER_SENDER: z.coerce.number().int().positive().default(100),
 
   // Ethereal SMTP (seeded dynamically; these are fallback env values)
   ETHEREAL_HOST: z.string().default('smtp.ethereal.email'),

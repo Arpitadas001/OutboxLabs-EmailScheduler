@@ -1,6 +1,6 @@
 # OutboxLabs Email Scheduler — Architecture
 
-> **Note on REQUIREMENTS.md**: The project root was empty at planning time; no `REQUIREMENTS.md` file existed on disk. The prompt-provided requirements are treated as the authoritative source of truth. Once you place a `REQUIREMENTS.md` in the root, cross-check this document and the checklist against it.
+> **Source of truth**: The assignment is in `backend/REQUIREMENTS.md`. This document's original planning sections are superseded where they conflict with the current implementation addenda at the end.
 
 ---
 
@@ -392,9 +392,9 @@ Redis executes Lua scripts atomically — no two workers can interleave inside t
 
 ## 7. Idempotency Strategy
 
-### Guarantee: **Effectively-Once** (not strict exactly-once)
+### Guarantee: **At-Least-Once** (a duplicate is possible in the SMTP-to-database gap)
 
-BullMQ provides at-least-once delivery. We achieve effectively-once via layered checks.
+BullMQ provides at-least-once delivery. Layered checks prevent duplicate processing in ordinary retries and concurrent claims, but they cannot close the SMTP-to-database crash window described below.
 
 ### Layer 1 — BullMQ Job ID deduplication
 
@@ -425,7 +425,9 @@ RETURNING *;
 | After SMTP send, before DB → SENT | BullMQ retries → SMTP sends again | ⚠️ at-least-once gap |
 | After DB → SENT | BullMQ retry → Layer 2 CAS finds SENT → silent abort | ✅ |
 
-**Honest assessment**: The window between SMTP `sendMail()` resolving and the subsequent DB commit is the only gap. Closing it fully requires a transactional outbox pattern or two-phase commit. Given Ethereal is a test SMTP service with no real user impact, the current approach is **production-acceptable for this assignment**. The gap is minimized by placing the DB write immediately after `sendMail()` resolves.
+**Honest assessment**: SMTP and PostgreSQL cannot participate in one atomic transaction. If SMTP accepts a message and the following database transaction fails, delivery may already have happened while the database still says `PROCESSING`. The worker logs the persistence error and attempts to release the row back to `SCHEDULED`, allowing BullMQ's retry to claim it; if PostgreSQL is unavailable for that recovery update too, startup stale-`PROCESSING` reconciliation can reclaim it after five minutes. Either recovery may send the message again because Ethereal SMTP does not provide an idempotency key coordinated with the database. The honest guarantee is **at-least-once delivery with a possible duplicate in the SMTP-to-database crash window**, not exactly-once delivery.
+
+SMTP failures are handled separately from post-send database failures. While BullMQ retries remain, the worker resets `PROCESSING` to `SCHEDULED` before rethrowing so the next attempt can win the atomic claim. It records `FAILED` and increments the campaign failure count only on the final configured attempt.
 
 ---
 
@@ -769,4 +771,11 @@ ETHEREAL_PASS=
 | 8 | **Slack** | DM the connected user via `im:write` + `conversations.open`. `slackNotifier.ts` starts with `if (!user.slackToken) return;` — app never crashes without Slack. OAuth redirect requires an `https://` tunnel (ngrok). `SLACK_CHANNEL_ID` env var removed. |
 | 9 | **Startup reconciliation** | Uses `addBulk` (single Redis round-trip) to re-queue all `SCHEDULED` emails. Silently skips jobs whose `jobId` already exists in Redis. Redis configured with `appendonly yes` + `maxmemory-policy noeviction`. |
 | 10 | **Auth implementation** | Uses `google-auth-library` OAuth2Client directly (no Passport). Session stores only `userId` in Redis via `connect-redis@7` + node-redis v4. |
-
+| 11 | **Worker rate reservation** | `rateLimiter.ts` uses one Redis Lua execution to check `ratelimit:{senderId}:{hourWindow}` and `ratelimit:slot:{senderId}`. The campaign hourly limit overrides the validated environment default. SMTP failure releases its reserved hourly count. |
+| 12 | **SMTP retry state** | SMTP failure returns an email to `SCHEDULED` while BullMQ attempts remain, and marks it `FAILED` only on the final attempt. A post-SMTP database error is logged and does not mark the email failed. |
+| 13 | **Actual service guarantee** | At-least-once delivery. There is a possible duplicate if SMTP accepts a message but the subsequent database `SENT` transaction fails and retry/recovery sends it again. |
+| 14 | **Email dashboard** | `GET /emails?view=scheduled|sent&page=N&limit=N` returns user-owned individual email rows. Scheduled includes SCHEDULED/PROCESSING; Sent includes SENT/FAILED. |
+| 15 | **Search indexing** | Elasticsearch stores scheduled and terminal email documents; campaign creation bulk indexes rows, worker state changes reindex individual rows, startup ensures the index and reindexes existing campaigns. PostgreSQL ownership remains the source of truth for dashboard APIs; search filters indexed user IDs. |
+| 16 | **Slack implementation** | `/slack/connect`, `/slack/callback`, `/slack/status`, and `DELETE /slack/disconnect` provide OAuth lifecycle. OAuth state is session-bound; tokens are AES-256-GCM encrypted. Notifications DM the connected user once per sender/hour window. Missing Slack configuration/connection is non-fatal. |
+| 17 | **Bull Board and backlog seed** | Authenticated Bull Board is mounted at `/admin/queues`. `npm run seed:backlog --workspace backend` creates 1,000+ future-dated jobs and does not send them during the demo. The seed command is opt-in and was not run as part of implementation. |
+| 18 | **Limits and trade-offs** | The delay is enforced between sender reservation/send starts, not SMTP completion times. Zero-delay campaign order uses a stable schedule-time/ID tie-break because the unchanged schema has no original-order column. |

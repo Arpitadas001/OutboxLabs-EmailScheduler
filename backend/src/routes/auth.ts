@@ -3,13 +3,14 @@ import { OAuth2Client } from 'google-auth-library';
 import { prisma } from '../lib/prisma';
 import { env } from '../config/env';
 import { requireAuth } from '../middleware/requireAuth';
-import "express-session";
+import 'express-session';
 
-declare module "express-session" {
+declare module 'express-session' {
   interface SessionData {
-    userId?: string;
+    userId: string;
   }
 }
+
 /**
  * Google OAuth 2.0 flow — no Passport, using google-auth-library directly.
  *

@@ -1,6 +1,6 @@
 # OutboxLabs Email Scheduler — Requirements Checklist
 
-> **Source of truth**: Prompt requirements (2026-10-05). No `REQUIREMENTS.md` was found on disk at planning time. Update this table as implementation progresses.
+> **Source of truth**: [`backend/REQUIREMENTS.md`](../backend/REQUIREMENTS.md), plus the user's explicit design-rule corrections.
 
 ---
 
@@ -11,8 +11,8 @@
 | A-02 | Google logout (session destroyed, redirect to /login) | 3 | **Done** | `backend/src/routes/auth.ts` GET /auth/logout → session.destroy() → redirect |
 | A-03 | User profile display (name, avatar in TopBar) | 3 | **Done** | `frontend/src/components/layout/UserAvatar.tsx` + GET /auth/me |
 | **DASHBOARD** | | | | |
-| D-01 | Dashboard showing Scheduled Emails | 4 | **Done** | `frontend/src/pages/DashboardPage.tsx` — Scheduled tab + live 10 s polling |
-| D-02 | Dashboard showing Sent Emails | 4 | **Done** | `frontend/src/pages/DashboardPage.tsx` — Sent tab |
+| D-01 | Dashboard showing individual Scheduled Emails | 4 | **Verified** | `GET /emails?view=scheduled`; includes SCHEDULED/PROCESSING rows, pagination, loading/error/empty states |
+| D-02 | Dashboard showing individual Sent Emails | 4 | **Verified** | `GET /emails?view=sent`; includes SENT/FAILED rows, pagination, loading/error/empty states |
 | **COMPOSE** | | | | |
 | C-01 | Compose email form (subject, body, settings) | 4 | **Done** | `frontend/src/pages/ComposePage.tsx` — 3-step wizard |
 | **CSV / LEADS** | | | | |
@@ -24,49 +24,49 @@
 | CF-02 | Configure delay between individual emails | 4 | **Done** | `delaySeconds` field; used to offset `scheduledAt` per email row |
 | CF-03 | Configure hourly sending limit | 4 | **Done** | `hourlyLimit` field stored on Campaign; enforced in Phase 6 Lua |
 | **SCHEDULING** | | | | |
-| S-01 | Schedule emails through BullMQ delayed jobs backed by Redis | 5 | Not started | |
-| S-02 | No cron / node-cron / OS cron / Agenda or prohibited schedulers | 5 | Not started | |
+| S-01 | Schedule emails through BullMQ delayed jobs backed by Redis | 5 | **Done** | Campaign route and startup reconciler share `enqueueScheduledEmailJobs()` |
+| S-02 | No cron / node-cron / OS cron / Agenda or prohibited schedulers | 5 | **Done** | BullMQ delayed jobs only |
 | **PERSISTENCE** | | | | |
 | P-01 | Persist campaigns in relational database (PostgreSQL) | 2 | **Done** | `prisma/schema.prisma` Campaign model + migration applied |
 | P-02 | Persist emails in relational database | 2 | **Done** | `prisma/schema.prisma` Email model + migration applied |
-| P-03 | Restart persistence: future scheduled emails survive backend restarts | 5 | Not started | |
+| P-03 | Restart persistence: future scheduled emails survive backend restarts | 5 | **Done** | Stale reclaim followed by scheduled-row `addBulk` reconciliation |
 | **EMAIL SENDING** | | | | |
-| E-01 | Send emails using Ethereal SMTP | 5 | Not started | |
+| E-01 | Send emails using Ethereal SMTP | 5 | **Verified** | One-off E2E run delivered three sample emails; each was SENT with attemptCount=1 and a unique messageId |
 | **WORKER** | | | | |
-| W-01 | Configurable worker concurrency | 5 | Not started | |
-| W-02 | Minimum delay between email sends (enforced in atomic Lua) | 6 | Not started | |
-| W-03 | Stale-PROCESSING reclaim on startup (crashed worker recovery, 5-min threshold) | 5 | Not started | |
+| W-01 | Configurable worker concurrency | 5 | **Done** | Validated `WORKER_CONCURRENCY` passed to BullMQ Worker |
+| W-02 | Minimum delay between email sends (enforced in atomic Lua) | 6 | **Verified** | Same atomic Lua reservation checks per-sender delay before quota increment; Redis test passes |
+| W-03 | Stale-PROCESSING reclaim on startup (crashed worker recovery, 5-min threshold) | 5 | **Done** | `reconcileOnStartup()` resets stale PROCESSING rows before requeue |
 | **RATE LIMITING** | | | | |
-| RL-01 | Hourly rate limiting (fixed hourly window, atomic Lua) | 6 | Not started | |
-| RL-02 | When hourly limit reached, emails must be delayed/rescheduled (not dropped) | 6 | Not started | |
-| RL-03 | Rate limiting must work safely across multiple workers | 6 | Not started | |
-| RL-04 | Decrement hourly counter on SMTP send failure (release reserved slot) | 6 | Not started | |
+| RL-01 | Hourly rate limiting (fixed hourly window, atomic Lua) | 6 | **Verified** | `ratelimit:{senderId}:{hourWindow}`; Redis concurrency test verifies cap |
+| RL-02 | When hourly limit reached, emails must be delayed/rescheduled (not dropped) | 6 | **Done** | BullMQ job is moved to next fixed-hour boundary plus stable original-order offset |
+| RL-03 | Rate limiting must work safely across multiple workers | 6 | **Verified** | Lua script executes atomically on shared Redis |
+| RL-04 | Decrement hourly counter on SMTP send failure (release reserved slot) | 6 | **Verified** | `releaseSenderSlot()` called on SMTP failure and covered by Redis test |
 | **IDEMPOTENCY** | | | | |
-| ID-01 | Prevent duplicate email sending — BullMQ jobId deduplication (`email-{id}`) | 5 | Not started | |
-| ID-02 | Atomic DB CAS SCHEDULED→PROCESSING using `processingStartedAt` column | 5 | Not started | |
+| ID-01 | Prevent duplicate email sending — BullMQ jobId deduplication (`email-{id}`) | 5 | **Verified** | Shared enqueue helper uses `email-{id}`; worker treats already claimed/sent rows as a no-op |
+| ID-02 | Atomic DB CAS SCHEDULED→PROCESSING using `processingStartedAt` column | 5 | **Verified** | `updateMany` compare-and-set is covered by concurrent-claim test; stale PROCESSING claims expire after five minutes |
 | **SENDER MODEL** | | | | |
 | SM-01 | Sender model (id, name, fromEmail, smtpHost, smtpPort, smtpUser, smtpPass) | 3 | **Done** | `prisma/schema.prisma` Sender model + migration `20261005062200_add_sender_model` |
 | SM-02 | 3 Ethereal SMTP accounts seeded via nodemailer.createTestAccount() | 3 | **Done** | `prisma/seed.ts` — 4 senders in DB (1 from initial run + 3 from second) |
 | SM-03 | senderId FK on Email — round-robin assignment on campaign creation | 3 | **Done** | `prisma/schema.prisma` Email.senderId + migration |
 | **ELASTICSEARCH** | | | | |
-| ES-01 | Elasticsearch indexing of emails | 7 | Not started | |
-| ES-02 | Elasticsearch search functionality | 7 | Not started | |
+| ES-01 | Elasticsearch indexing of emails | 7 | **Done** | Startup reindex, campaign bulk index, and worker status reindex |
+| ES-02 | Elasticsearch search functionality | 7 | **Done** | Authenticated `/search` API and frontend Search page, indexed user filter |
 | **BULL BOARD** | | | | |
-| BB-01 | Live BullMQ dashboard (Bull Board) | 8 | Not started | |
+| BB-01 | Live BullMQ dashboard (Bull Board) | 8 | **Done** | Authenticated Bull Board at `/admin/queues` |
 | **INFRASTRUCTURE** | | | | |
 | INF-01 | Redis configured with `appendonly yes` + `maxmemory-policy noeviction` | 1 | **Done** | `docker-compose.yml` redis service command |
 | INF-02 | ngrok tunnel documented for Slack OAuth local dev | 9 | Done | `.env.example` + `docs/architecture.md` § Corrections |
 | **SLACK** | | | | |
-| SL-01 | Real Slack OAuth integration | 9 | Not started | |
-| SL-02 | Slack notification when hourly sending limit is reached | 9 | Not started | |
-| SL-03 | Slack connect | 9 | Not started | |
-| SL-04 | Slack disconnect | 9 | Not started | |
-| SL-05 | Slack reconnect | 9 | Not started | |
-| SL-06 | Application must not crash if Slack is not connected | 9 | Not started | |
-| SL-07 | Slack profile/connection status display in UI | 9 | Not started | |
+| SL-01 | Real Slack OAuth integration | 9 | **Implemented; live flow needs app credentials** | Session-bound OAuth state, token exchange, AES-GCM encrypted token storage |
+| SL-02 | Slack notification when hourly sending limit is reached | 9 | **Implemented; live DM needs app credentials** | Sender/hour dedupe key; DM names the sender |
+| SL-03 | Slack connect | 9 | **Implemented; unverified live** | `GET /slack/connect` |
+| SL-04 | Slack disconnect | 9 | **Implemented** | `DELETE /slack/disconnect` |
+| SL-05 | Slack reconnect | 9 | **Implemented; unverified live** | New OAuth exchange overwrites the prior user's encrypted connection |
+| SL-06 | Application must not crash if Slack is not connected | 9 | **Verified** | No-op notifier test; worker catches/logs Slack errors |
+| SL-07 | Slack profile/connection status display in UI | 9 | **Implemented** | Dashboard Slack connection control |
 | **BACKLOG** | | | | |
-| BL-01 | Handle 1000+ scheduled emails as a backlog without sending thousands through Ethereal | 8 | Not started | |
-| BL-02 | 1000+ backlog seed script (`prisma/seed.ts`) | 8 | Not started | |
+| BL-01 | Handle 1000+ scheduled emails as a backlog without sending thousands through Ethereal | 8 | **Done** | Opt-in seed jobs begin at least 24 hours in the future and are staggered |
+| BL-02 | 1000+ backlog seed script (`prisma/seed.ts`) | 8 | **Done** | `backend/scripts/seed-backlog.ts`; not run during implementation |
 | **UI QUALITY** | | | | |
 | UI-01 | Professional responsive UI | 3 | **In progress** | `LoginPage.tsx` dark glassmorphism · `AppShell.tsx` gradient header · `UserAvatar.tsx` |
 | UI-02 | Loading states | 3 | **In progress** | `ProtectedRoute.tsx` spinner · `UserAvatar.tsx` skeleton |
@@ -74,8 +74,8 @@
 | UI-04 | Error states | 3 | **Done** | `LoginPage.tsx` OAuth error banner; Compose parse/submit error alerts |
 | UI-05 | Success states | 4 | **Done** | `ComposePage` success screen after campaign creation |
 | **TESTING** | | | | |
-| T-01 | Unit tests: rateLimiter combined Lua (hourly + min-delay) | 10 | Not started | |
-| T-02 | Unit tests: jobHelpers, slackNotifier (no-op when disconnected) | 10 | Not started | |
+| T-01 | Unit tests: rateLimiter combined Lua (hourly + min-delay) | 10 | **Verified** | `backend/test/rateLimiter.test.ts` runs the Lua against Redis, including concurrent reservations |
+| T-02 | Unit tests: jobHelpers, slackNotifier (no-op when disconnected) | 10 | **Verified** | Retry/order helpers and Slack crypto/disconnected no-op tests |
 | T-03 | Integration tests: campaign API, email API, CSV upload valid/invalid counts | 10 | Not started | |
 | T-04 | Worker test: idempotency — status=SENT job is a silent no-op | 10 | Not started | |
 | T-05 | Worker test: over-limit job calls moveToDelayed, never dropped | 10 | Not started | |
@@ -84,9 +84,9 @@
 | T-08 | Restart persistence test: after Redis flush, addBulk re-queues SCHEDULED emails | 10 | Not started | |
 | T-09 | E2E test — Login → Compose → Schedule → Dashboard → Search **(SHOULD)** | 10 | Not started | |
 | **DOCUMENTATION** | | | | |
-| DOC-01 | Professional README with setup instructions (incl. ngrok steps) | 10 | Not started | |
-| DOC-02 | Architecture documentation (`docs/architecture.md`) | 3 | **Done** | `docs/architecture.md` — Corrections section appended |
-| DOC-03 | Demo video showing restart persistence | 10 | Not started | |
+| DOC-01 | README setup, env, architecture, scheduling, persistence, rate limits and trade-offs | 10 | **Done** | Root README updated |
+| DOC-02 | Architecture documentation (`docs/architecture.md`) | 3 | **Done** | Current implementation addenda appended |
+| DOC-03 | Demo video showing restart persistence | 10 | **Not code-completable** | Must be recorded by the operator |
 | **UI (SHOULD)** | | | | |
 | UI-06 | Zustand for client UI state **(SHOULD — can use useState if time-constrained)** | 4 | Not started | |
 

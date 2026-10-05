@@ -7,6 +7,7 @@ import DashboardPage from './pages/DashboardPage';
 import LoginPage from './pages/LoginPage';
 import ComposePage from './pages/ComposePage';
 import HealthPage from './pages/HealthPage';
+import SearchPage from './pages/SearchPage';
 
 /**
  * React Query client — global config.
@@ -42,6 +43,7 @@ function App() {
             <Route index element={<DashboardPage />} />
             <Route path="compose" element={<ComposePage />} />
             <Route path="health" element={<HealthPage />} />
+            <Route path="search" element={<SearchPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

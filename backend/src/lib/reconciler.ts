@@ -1,5 +1,6 @@
 import { prisma } from './prisma';
 import { emailQueue } from './queue';
+import { enqueueScheduledEmailJobs } from './emailJobs';
 
 /**
  * Startup reconciler — runs once when the backend process starts.
@@ -58,25 +59,15 @@ export async function reconcileOnStartup(): Promise<void> {
     return;
   }
 
-  const now = Date.now();
+  // BullMQ addBulk is atomic; persisted SCHEDULED rows can be re-enqueued after
+  // an earlier campaign enqueue failed or Redis lost its queue data.
+  await enqueueScheduledEmailJobs(scheduled, (jobs) => emailQueue.addBulk(jobs));
 
-  const jobs = scheduled.map((email) => ({
-    name: 'send-email' as const,
-    data: { emailId: email.id },
-    opts: {
-      jobId: email.jobId,                                        // ID-01: deduplication
-      delay: Math.max(0, email.scheduledAt.getTime() - now),    // delay from now
-    },
-  }));
-
-  // BullMQ addBulk is atomic — duplicate jobIds are silently ignored.
-  await emailQueue.addBulk(jobs);
-
-  const immediate = jobs.filter((j) => (j.opts.delay ?? 0) === 0).length;
-  const delayed   = jobs.length - immediate;
+  const immediate = scheduled.filter((email) => email.scheduledAt.getTime() <= Date.now()).length;
+  const delayed = scheduled.length - immediate;
 
   console.log(
-    `[Reconciler] ✅ Re-queued ${jobs.length} email(s) into BullMQ` +
+    `[Reconciler] ✅ Re-queued ${scheduled.length} email(s) into BullMQ` +
       ` (${immediate} immediate, ${delayed} delayed).`,
   );
 }

@@ -4,6 +4,11 @@ import { useMutation } from '@tanstack/react-query';
 import { createCampaign, type CreateCampaignPayload } from '../api/campaigns';
 import { parseCsv, type ParseResult } from '../api/csv';
 
+function toLocalDateTimeValue(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 // ── Step indicator ────────────────────────────────────────────────────────────
 
 function StepIndicator({ current, total }: { current: number; total: number }) {
@@ -261,9 +266,7 @@ function Step3({
   }
 
   // Default startAt: 5 minutes from now, as local datetime-local string
-  const minDatetime = new Date(Date.now() + 2 * 60 * 1000)
-    .toISOString()
-    .slice(0, 16);
+  const minDatetime = toLocalDateTimeValue(new Date(Date.now() + 2 * 60 * 1000));
 
   return (
     <div className="compose-step-content">
@@ -408,7 +411,7 @@ export default function ComposePage() {
   const [parseError, setParseError] = useState<string | null>(null);
 
   // Step 3 state — default startAt 5 min from now
-  const defaultStart = new Date(Date.now() + 5 * 60 * 1000).toISOString().slice(0, 16);
+  const defaultStart = toLocalDateTimeValue(new Date(Date.now() + 5 * 60 * 1000));
   const [step3, setStep3] = useState<{
     name: string; startAt: string; delaySeconds: number; hourlyLimit: number;
   }>({ name: '', startAt: defaultStart, delaySeconds: 5, hourlyLimit: 50 });

@@ -8,12 +8,16 @@
     "start": "node dist/index.js",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
-    "test": "echo \"Error: no test specified\" && exit 0",
+    "test": "node --test -r ts-node/register test/workerLogic.test.ts test/emailJobs.test.ts test/rateLimiter.test.ts test/slack.test.ts",
+    "seed:backlog": "ts-node --project scripts/tsconfig.json scripts/seed-backlog.ts",
+    "e2e:send-check": "ts-node --project scripts/tsconfig.json scripts/e2e-send-check.ts",
     "prisma:generate": "dotenv -e ../.env -- prisma generate",
     "prisma:migrate": "dotenv -e ../.env -- prisma migrate dev",
     "prisma:seed": "dotenv -e ../.env -- ts-node --transpile-only prisma/seed.ts"
   },
   "dependencies": {
+    "@bull-board/api": "^9.10.4",
+    "@bull-board/express": "^9.10.4",
     "@prisma/client": "^6.19.3",
     "@types/multer": "^2.3.0",
     "@types/nodemailer": "^8.0.2",

@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { emailQueue } from '../lib/queue';
+import { enqueueScheduledEmailJobs } from '../lib/emailJobs';
+import { indexCampaignEmails } from '../lib/emailSearch';
 import { requireAuth } from '../middleware/requireAuth';
 import { z } from 'zod';
 
@@ -126,18 +128,11 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       orderBy: { scheduledAt: 'asc' },
     });
 
-    const now = Date.now();
-    const bullJobs = emailRows.map((row) => ({
-      name: 'send-email' as const,
-      data: { emailId: row.id },
-      opts: {
-        jobId: row.jobId,
-        delay: Math.max(0, row.scheduledAt.getTime() - now),
-      },
-    }));
-
-    await emailQueue.addBulk(bullJobs);
-    console.log(`[Campaigns] Enqueued ${bullJobs.length} job(s) for campaign ${campaign.id}`);
+    await enqueueScheduledEmailJobs(emailRows, (jobs) => emailQueue.addBulk(jobs));
+    console.log(`[Campaigns] Enqueued ${emailRows.length} job(s) for campaign ${campaign.id}`);
+    void indexCampaignEmails(campaign.id).catch((err: unknown) => {
+      console.error(`[Campaigns] Search indexing failed for campaign ${campaign.id}:`, err);
+    });
 
     res.status(201).json(campaign);
   } catch (err) {

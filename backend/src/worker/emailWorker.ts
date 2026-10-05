@@ -1,8 +1,20 @@
-import { Worker, Job } from 'bullmq';
-import { createRedisConnection } from '../lib/redis';
+import { DelayedError, Worker, Job } from 'bullmq';
+import { createRedisConnection, redis } from '../lib/redis';
 import { prisma } from '../lib/prisma';
 import { createSmtpTransport, getEtherealPreviewUrl } from '../lib/mailer';
 import { env } from '../config/env';
+import {
+  getDeterministicWindowOffset,
+  reserveSenderSlot,
+  releaseSenderSlot,
+} from '../lib/rateLimiter';
+import { indexEmail } from '../lib/emailSearch';
+import { notifySenderRateLimit } from '../lib/slack';
+import {
+  claimScheduledEmail,
+  getOriginalEmailOrderIndex,
+  hasRetriesRemaining,
+} from './emailWorkerLogic';
 
 /**
  * Email Worker — BullMQ worker that processes `send-email` jobs.
@@ -25,7 +37,8 @@ import { env } from '../config/env';
  *
  *   SCHEDULED → PROCESSING  (CAS in worker, before SMTP attempt)
  *   PROCESSING → SENT       (successful SMTP send)
- *   PROCESSING → FAILED     (SMTP error; BullMQ retries up to `attempts` times)
+ *   PROCESSING → SCHEDULED  (SMTP error while BullMQ retries remain)
+ *   PROCESSING → FAILED     (SMTP error after the final BullMQ attempt)
  *
  * ── Campaign completion ───────────────────────────────────────────────────────
  *
@@ -39,7 +52,7 @@ interface EmailJobData {
 }
 
 export function startEmailWorker(): Worker<EmailJobData> {
-  const concurrency = parseInt(env.WORKER_CONCURRENCY, 10); // W-01
+  const concurrency = env.WORKER_CONCURRENCY;
 
   const worker = new Worker<EmailJobData>(
     'email',
@@ -51,7 +64,18 @@ export function startEmailWorker(): Worker<EmailJobData> {
         where: { id: emailId },
         include: {
           sender: true,
-          campaign: { select: { id: true, subject: true, body: true, totalEmails: true } },
+          campaign: {
+            select: {
+              id: true,
+              subject: true,
+              body: true,
+              totalEmails: true,
+              startAt: true,
+              delaySeconds: true,
+              hourlyLimit: true,
+              userId: true,
+            },
+          },
         },
       });
 
@@ -72,22 +96,81 @@ export function startEmailWorker(): Worker<EmailJobData> {
       }
 
       // ── Layer 2b: Atomic CAS SCHEDULED → PROCESSING ────────────────────
-      const { count: claimed } = await prisma.email.updateMany({
-        where: { id: emailId, status: 'SCHEDULED' },
-        data: {
-          status: 'PROCESSING',
-          processingStartedAt: new Date(),
-          attemptCount: { increment: 1 },
-        },
-      });
+      const claimed = await claimScheduledEmail(
+        (args) => prisma.email.updateMany(args),
+        emailId,
+      );
 
-      if (claimed === 0) {
+      if (!claimed) {
         // Another worker instance won the CAS race
         console.log(`[Worker] job ${job.id}: email ${emailId} already claimed — skipping`);
         return;
       }
 
-      // ── SMTP send ───────────────────────────────────────────────────────
+      const minDelayMs = Math.max(
+        env.MIN_DELAY_BETWEEN_EMAILS_MS,
+        email.campaign.delaySeconds * 1000,
+      );
+      const hourlyLimit = email.campaign.hourlyLimit || env.MAX_EMAILS_PER_HOUR_PER_SENDER;
+      let reservation;
+
+      try {
+        reservation = await reserveSenderSlot(
+          redis,
+          email.senderId,
+          hourlyLimit,
+          minDelayMs,
+        );
+      } catch (rateLimitError) {
+        await releaseEmailForRetry(emailId);
+        throw rateLimitError;
+      }
+
+      if (!reservation.allowed) {
+        if (reservation.reason === 'HOURLY_LIMIT') {
+          await notifySenderRateLimit(
+            email.campaign.userId,
+            email.senderId,
+            email.sender.name,
+            reservation.window,
+          ).catch((error: unknown) => {
+            console.error(`[Worker] Slack rate-limit notification failed for sender ${email.senderId}:`, error);
+          });
+        }
+
+        const plannedOrderIndex = getOriginalEmailOrderIndex(
+          email.scheduledAt,
+          email.campaign.startAt,
+          email.campaign.delaySeconds,
+        );
+        const orderIndex = email.campaign.delaySeconds > 0
+          ? plannedOrderIndex
+          : await prisma.email.count({
+              where: {
+                campaignId: email.campaignId,
+                OR: [
+                  { scheduledAt: { lt: email.scheduledAt } },
+                  { scheduledAt: email.scheduledAt, id: { lt: email.id } },
+                ],
+              },
+            });
+        const deterministicOffset = getDeterministicWindowOffset(orderIndex, minDelayMs);
+        const retryAt = reservation.retryAt + (
+          reservation.reason === 'HOURLY_LIMIT' ? deterministicOffset : 0
+        );
+
+        console.info(
+          `[Worker] Sender ${email.senderId} deferred email ${emailId} (${reservation.reason}) until ${new Date(retryAt).toISOString()}.`,
+        );
+        await releaseEmailForRetry(emailId);
+        await job.moveToDelayed(retryAt, job.token);
+        throw new DelayedError();
+      }
+
+      // Keep SMTP errors separate from database persistence errors. A failed
+      // SENT update must never turn a successfully accepted SMTP message into
+      // a terminal FAILED email.
+      let info;
       try {
         const transport = createSmtpTransport(
           email.sender.smtpHost,
@@ -96,67 +179,129 @@ export function startEmailWorker(): Worker<EmailJobData> {
           email.sender.smtpPass,
         );
 
-        const info = await transport.sendMail({
+        info = await transport.sendMail({
           from:    `"${email.sender.name}" <${email.sender.fromEmail}>`,
           to:      email.recipientEmail,
           subject: email.campaign.subject,
           text:    email.campaign.body,
           html:    `<p style="font-family:sans-serif;line-height:1.6">${email.campaign.body.replace(/\n/g, '<br>')}</p>`,
         });
+      } catch (sendError) {
+        const message = sendError instanceof Error ? sendError.message : String(sendError);
+        console.error(
+          `[Worker] ❌ Failed to send email ${emailId} (attempt ${job.attemptsMade + 1}/${job.opts.attempts ?? 1}): ${message}`,
+        );
+        try {
+          await releaseSenderSlot(redis, reservation.windowKey);
+        } catch (releaseError) {
+          console.error(`[Worker] Could not release reserved hourly slot for ${emailId}:`, releaseError);
+        }
 
-        const previewUrl = getEtherealPreviewUrl(info);
+        if (hasRetriesRemaining(job)) {
+          try {
+            const released = await prisma.email.updateMany({
+              where: { id: emailId, status: 'PROCESSING' },
+              data: { status: 'SCHEDULED', processingStartedAt: null },
+            });
+            if (released.count !== 1) {
+              console.warn(`[Worker] Email ${emailId} could not be released for its BullMQ retry.`);
+            }
+          } catch (recoveryError) {
+            console.error(
+              `[Worker] Could not release email ${emailId} for its BullMQ retry:`,
+              recoveryError,
+            );
+          }
+        } else {
+          const markedFailed = await prisma.$transaction(async (tx) => {
+            const result = await tx.email.updateMany({
+              where: { id: emailId, status: 'PROCESSING' },
+              data: {
+                status: 'FAILED',
+                failedAt: new Date(),
+                errorMessage: message,
+                processingStartedAt: null,
+              },
+            });
 
-        // ── Mark SENT + increment campaign sentCount ────────────────────
-        await prisma.$transaction([
-          prisma.email.update({
-            where: { id: emailId },
+            if (result.count === 1) {
+              await tx.campaign.update({
+                where: { id: email.campaignId },
+                data: { failedCount: { increment: 1 } },
+              });
+            }
+
+            return result.count === 1;
+          });
+
+          if (markedFailed) {
+            await indexEmail(emailId).catch((err: unknown) => {
+              console.error(`[Worker] Could not index failed email ${emailId}:`, err);
+            });
+            await maybeFinaliseCampaign(email.campaignId, email.campaign.totalEmails);
+          }
+        }
+
+        throw sendError;
+      }
+
+      const previewUrl = getEtherealPreviewUrl(info);
+      let markedSent: boolean;
+
+      try {
+        markedSent = await prisma.$transaction(async (tx) => {
+          const result = await tx.email.updateMany({
+            where: { id: emailId, status: 'PROCESSING' },
             data: {
-              status:    'SENT',
-              sentAt:    new Date(),
+              status: 'SENT',
+              sentAt: new Date(),
               messageId: info.messageId ?? null,
+              processingStartedAt: null,
+              errorMessage: null,
             },
-          }),
-          prisma.campaign.update({
-            where: { id: email.campaignId },
-            data: { sentCount: { increment: 1 } },
-          }),
-        ]);
+          });
 
+          if (result.count === 1) {
+            await tx.campaign.update({
+              where: { id: email.campaignId },
+              data: { sentCount: { increment: 1 } },
+            });
+          }
+
+          return result.count === 1;
+        });
+      } catch (persistenceError) {
+        console.error(
+          `[Worker] SMTP accepted email ${emailId}, but database persistence of SENT failed:`,
+          persistenceError,
+        );
+
+        try {
+          await prisma.email.updateMany({
+            where: { id: emailId, status: 'PROCESSING' },
+            data: { status: 'SCHEDULED', processingStartedAt: null },
+          });
+        } catch (recoveryError) {
+          console.error(
+            `[Worker] Could not release email ${emailId} after SENT persistence failed; stale-PROCESSING recovery may reclaim it:`,
+            recoveryError,
+          );
+        }
+
+        throw persistenceError;
+      }
+
+      if (!markedSent) {
+        console.warn(`[Worker] Email ${emailId} was no longer PROCESSING after SMTP accepted it.`);
+      } else {
+        await indexEmail(emailId).catch((err: unknown) => {
+          console.error(`[Worker] Could not index sent email ${emailId}:`, err);
+        });
         console.log(
           `[Worker] ✅ Sent email ${emailId} → ${email.recipientEmail}` +
             (previewUrl ? `\n          Preview: ${previewUrl}` : ''),
         );
-
-        // ── Check campaign completion ────────────────────────────────────
         await maybeFinaliseCampaign(email.campaignId, email.campaign.totalEmails);
-      } catch (sendError) {
-        // ── SMTP failure: mark FAILED + increment failedCount ────────────
-        const message = sendError instanceof Error ? sendError.message : String(sendError);
-
-        console.error(
-          `[Worker] ❌ Failed to send email ${emailId} (attempt ${job.attemptsMade + 1}/${job.opts.attempts ?? 1}): ${message}`,
-        );
-
-        await prisma.$transaction([
-          prisma.email.update({
-            where: { id: emailId },
-            data: {
-              status:       'FAILED',
-              failedAt:     new Date(),
-              errorMessage: message,
-            },
-          }),
-          prisma.campaign.update({
-            where: { id: email.campaignId },
-            data: { failedCount: { increment: 1 } },
-          }),
-        ]);
-
-        await maybeFinaliseCampaign(email.campaignId, email.campaign.totalEmails);
-
-        // Re-throw so BullMQ records the attempt and schedules the retry.
-        // On the final attempt BullMQ moves the job to the failed set.
-        throw sendError;
       }
     },
     {
@@ -183,6 +328,17 @@ export function startEmailWorker(): Worker<EmailJobData> {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+async function releaseEmailForRetry(emailId: string): Promise<void> {
+  const released = await prisma.email.updateMany({
+    where: { id: emailId, status: 'PROCESSING' },
+    data: { status: 'SCHEDULED', processingStartedAt: null },
+  });
+
+  if (released.count !== 1) {
+    throw new Error(`Email ${emailId} could not be released from PROCESSING.`);
+  }
+}
+
 /**
  * After each terminal email update (SENT or FAILED), check whether all emails
  * for the campaign have reached a terminal state.  If so, finalize the campaign.
@@ -190,7 +346,7 @@ export function startEmailWorker(): Worker<EmailJobData> {
  * We read the freshest counts from the DB (not from the in-memory email object)
  * to avoid stale-read races under concurrent workers.
  */
-async function maybeFinaliseCamera(campaignId: string, totalEmails: number): Promise<void> {
+async function maybeFinaliseCampaign(campaignId: string, totalEmails: number): Promise<void> {
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
     select: { sentCount: true, failedCount: true, status: true },
@@ -211,6 +367,3 @@ async function maybeFinaliseCamera(campaignId: string, totalEmails: number): Pro
 
   console.log(`[Worker] Campaign ${campaignId} → ${finalStatus} (sent: ${campaign.sentCount}, failed: ${campaign.failedCount})`);
 }
-
-// Alias with correct spelling used above
-const maybeFinaliseCampaign = maybeFinaliseCamera;

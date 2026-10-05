@@ -41,7 +41,14 @@ export default function AppShell() {
             <nav className="flex items-center gap-1">
               <NavLink to="/" end className={navLinkClass}>Dashboard</NavLink>
               <NavLink to="/compose" className={navLinkClass}>Compose</NavLink>
+              <NavLink to="/search" className={navLinkClass}>Search</NavLink>
               <NavLink to="/health" className={navLinkClass}>Health</NavLink>
+              <a
+                href={`${import.meta.env.VITE_API_URL ?? 'http://localhost:3001'}/admin/queues`}
+                className="px-3 py-2 rounded-lg text-sm font-medium text-gray-400 hover:text-gray-100 hover:bg-gray-800"
+              >
+                Queues
+              </a>
             </nav>
 
             {/* User info + logout */}

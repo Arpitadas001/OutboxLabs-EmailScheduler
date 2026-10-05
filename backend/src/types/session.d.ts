@@ -6,5 +6,6 @@ declare module 'express-session' {
   interface SessionData {
     /** The authenticated User's DB primary key (cuid). */
     userId: string;
+    slackOAuthState?: string;
   }
 }

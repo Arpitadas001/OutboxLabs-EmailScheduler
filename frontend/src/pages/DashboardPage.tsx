@@ -1,84 +1,88 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useState } from 'react';
-import { fetchCampaigns, type Campaign, type CampaignStatus } from '../api/campaigns';
+import {
+  fetchCampaigns,
+  fetchEmails,
+  type Campaign,
+  type EmailRow,
+} from '../api/campaigns';
+import SlackConnection from '../components/slack/SlackConnection';
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+type TabId = 'scheduled' | 'sent';
 
-function statusBadge(status: CampaignStatus) {
-  const config: Record<CampaignStatus, { label: string; cls: string }> = {
-    SCHEDULED: { label: 'Scheduled', cls: 'badge-scheduled' },
-    RUNNING:   { label: 'Running',   cls: 'badge-running'   },
-    COMPLETED: { label: 'Completed', cls: 'badge-completed' },
-    PAUSED:    { label: 'Paused',    cls: 'badge-paused'    },
-    DRAFT:     { label: 'Draft',     cls: 'badge-draft'     },
-    FAILED:    { label: 'Failed',    cls: 'badge-failed'    },
-    CANCELLED: { label: 'Cancelled', cls: 'badge-draft'     },
-  };
-  const { label, cls } = config[status] ?? { label: status, cls: 'badge-draft' };
-  return <span className={`badge ${cls}`}>{label}</span>;
-}
-
-function fmtDate(iso: string) {
+function fmtDate(iso: string | null): string {
+  if (!iso) return '—';
   return new Date(iso).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
   });
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+function StatusBadge({ status }: { status: EmailRow['status'] }) {
+  const presentation: Record<EmailRow['status'], { label: string; className: string }> = {
+    SCHEDULED: { label: 'Scheduled', className: 'badge-scheduled' },
+    PROCESSING: { label: 'Sending', className: 'badge-running' },
+    SENT: { label: 'Sent', className: 'badge-completed' },
+    FAILED: { label: 'Failed', className: 'badge-failed' },
+    CANCELLED: { label: 'Cancelled', className: 'badge-draft' },
+  };
+  const { label, className } = presentation[status];
+  return <span className={`badge ${className}`}>{label}</span>;
+}
 
-function EmptyState({ tab }: { tab: 'scheduled' | 'sent' }) {
+function EmptyState({ tab }: { tab: TabId }) {
   return (
     <div className="dash-empty">
-      <div className="dash-empty-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
-          <path strokeLinecap="round" strokeLinejoin="round"
-            d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"
-          />
-        </svg>
-      </div>
+      <div className="dash-empty-icon" aria-hidden="true">✉</div>
       <p className="dash-empty-title">
-        {tab === 'scheduled' ? 'No scheduled campaigns yet' : 'No completed campaigns yet'}
+        {tab === 'scheduled' ? 'No scheduled emails yet' : 'No sent emails yet'}
       </p>
       <p className="dash-empty-sub">
         {tab === 'scheduled'
-          ? 'Create your first campaign to get started.'
-          : 'Completed campaigns will appear here once emails are sent.'}
+          ? 'Create a campaign to see its scheduled emails here.'
+          : 'Sent and failed emails will appear here.'}
       </p>
       {tab === 'scheduled' && (
-        <Link to="/compose" className="dash-empty-cta">
-          Create Campaign
-        </Link>
+        <Link to="/compose" className="dash-empty-cta">Compose an email</Link>
       )}
     </div>
   );
 }
 
-function ScheduledTable({ campaigns }: { campaigns: Campaign[] }) {
-  if (campaigns.length === 0) return <EmptyState tab="scheduled" />;
+function EmailTable({ emails, tab }: { emails: EmailRow[]; tab: TabId }) {
+  if (emails.length === 0) return <EmptyState tab={tab} />;
+
   return (
     <div className="dash-table-wrap">
       <table className="dash-table">
         <thead>
           <tr>
-            <th>Campaign</th>
+            <th>Email</th>
             <th>Subject</th>
+            <th>{tab === 'scheduled' ? 'Scheduled time' : 'Sent time'}</th>
             <th>Status</th>
-            <th>Start</th>
-            <th className="text-right">Recipients</th>
-            <th className="text-right">Sent</th>
           </tr>
         </thead>
         <tbody>
-          {campaigns.map((c) => (
-            <tr key={c.id}>
-              <td className="font-medium text-gray-100">{c.name}</td>
-              <td className="text-gray-400 truncate max-w-xs">{c.subject}</td>
-              <td>{statusBadge(c.status)}</td>
-              <td className="text-gray-400 text-sm">{fmtDate(c.startAt)}</td>
-              <td className="text-right text-gray-300">{c.totalEmails.toLocaleString()}</td>
-              <td className="text-right text-emerald-400">{c.sentCount.toLocaleString()}</td>
+          {emails.map((email) => (
+            <tr key={email.id}>
+              <td className="font-medium text-gray-100">{email.recipientEmail}</td>
+              <td className="text-gray-400">
+                <span title={email.campaign.subject}>{email.campaign.subject}</span>
+                {email.status === 'FAILED' && email.errorMessage && (
+                  <span className="block text-xs text-red-400 mt-1" title={email.errorMessage}>
+                    {email.errorMessage}
+                  </span>
+                )}
+              </td>
+              <td className="text-gray-400 text-sm">
+                {fmtDate(tab === 'scheduled' ? email.scheduledAt : email.sentAt ?? email.failedAt)}
+              </td>
+              <td><StatusBadge status={email.status} /></td>
             </tr>
           ))}
         </tbody>
@@ -86,140 +90,20 @@ function ScheduledTable({ campaigns }: { campaigns: Campaign[] }) {
     </div>
   );
 }
-
-function SentTable({ campaigns }: { campaigns: Campaign[] }) {
-  if (campaigns.length === 0) return <EmptyState tab="sent" />;
-  return (
-    <div className="dash-table-wrap">
-      <table className="dash-table">
-        <thead>
-          <tr>
-            <th>Campaign</th>
-            <th>Subject</th>
-            <th className="text-right">Total</th>
-            <th className="text-right">Sent</th>
-            <th className="text-right">Failed</th>
-            <th>Completed</th>
-          </tr>
-        </thead>
-        <tbody>
-          {campaigns.map((c) => (
-            <tr key={c.id}>
-              <td className="font-medium text-gray-100">{c.name}</td>
-              <td className="text-gray-400 truncate max-w-xs">{c.subject}</td>
-              <td className="text-right text-gray-300">{c.totalEmails.toLocaleString()}</td>
-              <td className="text-right text-emerald-400">{c.sentCount.toLocaleString()}</td>
-              <td className="text-right text-red-400">{c.failedCount.toLocaleString()}</td>
-              <td className="text-gray-400 text-sm">{fmtDate(c.updatedAt)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// ── Page ──────────────────────────────────────────────────────────────────────
-
-type TabId = 'scheduled' | 'sent';
-
-export default function DashboardPage() {
-  const [activeTab, setActiveTab] = useState<TabId>('scheduled');
-
-  const { data: campaigns = [], isLoading, isError } = useQuery({
-    queryKey: ['campaigns'],
-    queryFn: fetchCampaigns,
-    refetchInterval: 10_000, // live polling — refreshes every 10 s
-  });
-
-  const scheduled = campaigns.filter(
-    (c) => c.status === 'SCHEDULED' || c.status === 'RUNNING' || c.status === 'PAUSED',
-  );
-  const sent = campaigns.filter(
-    (c) => c.status === 'COMPLETED' || c.status === 'FAILED' || c.status === 'CANCELLED',
-  );
-
-  // ── Stats bar ──────────────────────────────────────────────────────────────
-  const totalSent    = campaigns.reduce((s, c) => s + c.sentCount, 0);
-  const totalFailed  = campaigns.reduce((s, c) => s + c.failedCount, 0);
-  const totalQueued  = campaigns.reduce((s, c) => s + Math.max(0, c.totalEmails - c.sentCount - c.failedCount), 0);
-
-  return (
-    <div className="dash-page">
-      {/* ── Header ─────────────────────────────────────────────────────── */}
-      <div className="dash-header">
-        <div>
-          <h1 className="dash-title">Dashboard</h1>
-          <p className="dash-sub">Monitor your email campaigns in real-time.</p>
-        </div>
-        <Link to="/compose" id="dash-compose-btn" className="btn-primary">
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-          </svg>
-          New Campaign
-        </Link>
-      </div>
-
-      {/* ── Stats ──────────────────────────────────────────────────────── */}
-      <div className="dash-stats">
-        <StatCard label="Total Campaigns" value={campaigns.length} icon="📋" color="indigo" />
-        <StatCard label="Queued" value={totalQueued} icon="⏳" color="amber" />
-        <StatCard label="Sent" value={totalSent} icon="✅" color="emerald" />
-        <StatCard label="Failed" value={totalFailed} icon="❌" color="red" />
-      </div>
-
-      {/* ── Tabs ────────────────────────────────────────────────────────── */}
-      <div className="dash-card">
-        <div className="dash-tabs">
-          {(['scheduled', 'sent'] as TabId[]).map((tab) => (
-            <button
-              key={tab}
-              id={`tab-${tab}`}
-              onClick={() => setActiveTab(tab)}
-              className={`dash-tab ${activeTab === tab ? 'dash-tab-active' : ''}`}
-            >
-              {tab === 'scheduled' ? `Scheduled (${scheduled.length})` : `Sent (${sent.length})`}
-            </button>
-          ))}
-        </div>
-
-        {/* ── Content ─────────────────────────────────────────────────── */}
-        {isLoading && (
-          <div className="dash-loading">
-            <div className="spinner" />
-            <span>Loading campaigns…</span>
-          </div>
-        )}
-
-        {isError && (
-          <div className="dash-error">
-            <span>⚠️ Failed to load campaigns. The backend may be down.</span>
-          </div>
-        )}
-
-        {!isLoading && !isError && (
-          <>
-            {activeTab === 'scheduled' && <ScheduledTable campaigns={scheduled} />}
-            {activeTab === 'sent'      && <SentTable campaigns={sent} />}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── StatCard ──────────────────────────────────────────────────────────────────
 
 function StatCard({
   label, value, icon, color,
 }: {
-  label: string; value: number; icon: string; color: 'indigo' | 'amber' | 'emerald' | 'red';
+  label: string;
+  value: number;
+  icon: string;
+  color: 'indigo' | 'amber' | 'emerald' | 'red';
 }) {
   const colors = {
-    indigo:  'stat-indigo',
-    amber:   'stat-amber',
+    indigo: 'stat-indigo',
+    amber: 'stat-amber',
     emerald: 'stat-emerald',
-    red:     'stat-red',
+    red: 'stat-red',
   };
   return (
     <div className={`stat-card ${colors[color]}`}>
@@ -227,6 +111,134 @@ function StatCard({
       <div>
         <div className="stat-value">{value.toLocaleString()}</div>
         <div className="stat-label">{label}</div>
+      </div>
+    </div>
+  );
+}
+
+function CampaignStats({ campaigns }: { campaigns: Campaign[] }) {
+  const totalSent = campaigns.reduce((sum, campaign) => sum + campaign.sentCount, 0);
+  const totalFailed = campaigns.reduce((sum, campaign) => sum + campaign.failedCount, 0);
+  const totalQueued = campaigns.reduce(
+    (sum, campaign) =>
+      sum + Math.max(0, campaign.totalEmails - campaign.sentCount - campaign.failedCount),
+    0,
+  );
+
+  return (
+    <div className="dash-stats">
+      <StatCard label="Campaigns" value={campaigns.length} icon="📋" color="indigo" />
+      <StatCard label="Queued emails" value={totalQueued} icon="⏳" color="amber" />
+      <StatCard label="Sent emails" value={totalSent} icon="✅" color="emerald" />
+      <StatCard label="Failed emails" value={totalFailed} icon="❌" color="red" />
+    </div>
+  );
+}
+
+export default function DashboardPage() {
+  const [activeTab, setActiveTab] = useState<TabId>('scheduled');
+  const [page, setPage] = useState(1);
+
+  const campaignsQuery = useQuery({
+    queryKey: ['campaigns'],
+    queryFn: fetchCampaigns,
+    refetchInterval: 10_000,
+  });
+  const emailsQuery = useQuery({
+    queryKey: ['emails', activeTab, page],
+    queryFn: () => fetchEmails(activeTab, page, 50),
+    refetchInterval: 5_000,
+  });
+
+  function selectTab(tab: TabId) {
+    setActiveTab(tab);
+    setPage(1);
+  }
+
+  const pageInfo = emailsQuery.data;
+  const totalPages = Math.max(1, pageInfo?.totalPages ?? 1);
+
+  return (
+    <div className="dash-page">
+      <div className="dash-header">
+        <div>
+          <h1 className="dash-title">Dashboard</h1>
+          <p className="dash-sub">Monitor scheduled and sent emails in real time.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <SlackConnection />
+          <Link to="/compose" id="dash-compose-btn" className="btn-primary">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            Compose New Email
+          </Link>
+        </div>
+      </div>
+
+      {campaignsQuery.isLoading && (
+        <div className="dash-loading"><div className="spinner" /><span>Loading campaign stats…</span></div>
+      )}
+      {campaignsQuery.isError && (
+        <div className="dash-error" role="alert">
+          Campaign totals could not be loaded.
+          <button className="btn-ghost ml-3" onClick={() => void campaignsQuery.refetch()}>Retry</button>
+        </div>
+      )}
+      {campaignsQuery.data && <CampaignStats campaigns={campaignsQuery.data} />}
+
+      <div className="dash-card">
+        <div className="dash-tabs" role="tablist" aria-label="Email status">
+          {(['scheduled', 'sent'] as const).map((tab) => (
+            <button
+              key={tab}
+              id={`tab-${tab}`}
+              role="tab"
+              aria-selected={activeTab === tab}
+              onClick={() => selectTab(tab)}
+              className={`dash-tab ${activeTab === tab ? 'dash-tab-active' : ''}`}
+            >
+              {tab === 'scheduled' ? 'Scheduled Emails' : 'Sent Emails'}
+              {tab === activeTab && pageInfo ? ` (${pageInfo.total.toLocaleString()})` : ''}
+            </button>
+          ))}
+        </div>
+
+        {emailsQuery.isLoading && (
+          <div className="dash-loading"><div className="spinner" /><span>Loading emails…</span></div>
+        )}
+        {emailsQuery.isError && (
+          <div className="dash-error" role="alert">
+            Emails could not be loaded.
+            <button className="btn-ghost ml-3" onClick={() => void emailsQuery.refetch()}>Retry</button>
+          </div>
+        )}
+        {!emailsQuery.isLoading && !emailsQuery.isError && pageInfo && (
+          <>
+            <EmailTable emails={pageInfo.emails} tab={activeTab} />
+            {pageInfo.totalPages > 1 && (
+              <div className="flex items-center justify-between border-t border-gray-800 px-5 py-3 text-sm text-gray-400">
+                <span>Page {pageInfo.page} of {pageInfo.totalPages}</span>
+                <div className="flex gap-2">
+                  <button
+                    className="btn-ghost"
+                    disabled={page <= 1}
+                    onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    className="btn-ghost"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
