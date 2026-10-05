@@ -1,0 +1,103 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Sender ───────────────────────────────────────────────────────────────────
+// Represents one Ethereal SMTP account.  Three senders are seeded on first run.
+// Campaigns assign senders round-robin so hourly limits are per-sender.
+model Sender {
+  id        String   @id @default(cuid())
+  name      String
+  fromEmail String   @unique
+  smtpHost  String
+  smtpPort  Int
+  smtpUser  String
+  smtpPass  String
+  createdAt DateTime @default(now())
+  emails    Email[]
+}
+
+// ─── User ─────────────────────────────────────────────────────────────────────
+model User {
+  id          String     @id @default(cuid())
+  googleId    String     @unique
+  email       String     @unique
+  name        String
+  picture     String?
+  slackUserId String?
+  slackToken  String?    // AES-256 encrypted at rest
+  slackTeamId String?
+  createdAt   DateTime   @default(now())
+  campaigns   Campaign[]
+}
+
+// ─── Campaign ─────────────────────────────────────────────────────────────────
+model Campaign {
+  id           String         @id @default(cuid())
+  userId       String
+  user         User           @relation(fields: [userId], references: [id])
+  name         String
+  subject      String
+  body         String         @db.Text
+  status       CampaignStatus @default(DRAFT)
+  startAt      DateTime
+  delaySeconds Int            // minimum seconds between individual sends
+  hourlyLimit  Int            // max emails per hour per sender (overrides env default)
+  totalEmails  Int            @default(0)
+  sentCount    Int            @default(0)
+  failedCount  Int            @default(0)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  emails       Email[]
+
+  @@index([userId, createdAt])
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// ─── Email ────────────────────────────────────────────────────────────────────
+model Email {
+  id                  String      @id @default(cuid())
+  campaignId          String
+  campaign            Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  senderId            String      // which Ethereal SMTP account handles this email
+  sender              Sender      @relation(fields: [senderId], references: [id])
+  recipientEmail      String
+  status              EmailStatus @default(SCHEDULED)
+  scheduledAt         DateTime
+  processingStartedAt DateTime?   // set when status → PROCESSING; for stale-job reclaim
+  sentAt              DateTime?
+  failedAt            DateTime?
+  errorMessage        String?
+  messageId           String?     // Ethereal preview message ID
+  jobId               String      @unique  // BullMQ job ID = "email-{id}" (no colons)
+  attemptCount        Int         @default(0)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@index([campaignId, status])
+  @@index([scheduledAt])
+  @@index([jobId])
+  @@index([status, processingStartedAt]) // stale-PROCESSING query
+}
+
+enum EmailStatus {
+  SCHEDULED
+  PROCESSING
+  SENT
+  FAILED
+  CANCELLED
+}
