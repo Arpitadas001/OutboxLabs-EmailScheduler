@@ -76,12 +76,12 @@
 | **TESTING** | | | | |
 | T-01 | Unit tests: rateLimiter combined Lua (hourly + min-delay) | 10 | **Verified** | `backend/test/rateLimiter.test.ts` runs the Lua against Redis, including concurrent reservations |
 | T-02 | Unit tests: jobHelpers, slackNotifier (no-op when disconnected) | 10 | **Verified** | Retry/order helpers and Slack crypto/disconnected no-op tests |
-| T-03 | Integration tests: campaign API, email API, CSV upload valid/invalid counts | 10 | Not started | |
-| T-04 | Worker test: idempotency — status=SENT job is a silent no-op | 10 | Not started | |
-| T-05 | Worker test: over-limit job calls moveToDelayed, never dropped | 10 | Not started | |
-| T-06 | Worker test: SMTP failure triggers rateLimiter.decrement() | 10 | Not started | |
-| T-07 | Startup reconciler test: stale PROCESSING rows reset before re-queue | 10 | Not started | |
-| T-08 | Restart persistence test: after Redis flush, addBulk re-queues SCHEDULED emails | 10 | Not started | |
+| T-03 | Integration tests: campaign API, email API, CSV upload valid/invalid counts | 10 | **Verified** | HTTP tests cover campaign validation, paginated email response/validation, actual CSV multipart parsing/counts/deduplication, and auth rejection. Email list uses an injected service seam; no database writes. |
+| T-04 | Worker test: idempotency — status=SENT job is a silent no-op | 10 | **Verified** | Terminal status guard and concurrent SCHEDULED claim tests |
+| T-05 | Worker test: over-limit job calls moveToDelayed, never dropped | 10 | **Verified** | Reschedule logic test verifies PROCESSING→SCHEDULED and exact BullMQ delayed timestamp |
+| T-06 | Worker test: SMTP failure triggers rateLimiter.decrement() | 10 | **Verified** | Worker retry-state reset and Redis sender-slot release tests |
+| T-07 | Startup reconciler test: stale PROCESSING rows reset before re-queue | 10 | **Verified** | Reconciler test verifies the five-minute cutoff, reclaim-before-query order, and failure propagation |
+| T-08 | Restart persistence test: after Redis flush, addBulk re-queues SCHEDULED emails | 10 | **Verified** | Reconciliation test verifies persisted scheduled rows produce minimal delayed BullMQ jobs through addBulk |
 | T-09 | E2E test — Login → Compose → Schedule → Dashboard → Search **(SHOULD)** | 10 | Not started | |
 | **DOCUMENTATION** | | | | |
 | DOC-01 | README setup, env, architecture, scheduling, persistence, rate limits and trade-offs | 10 | **Done** | Root README updated |
@@ -154,4 +154,4 @@
 - **RL-04 (Decrement on failure)**: SMTP failure calls `DECR ratelimit:{senderId}:{windowKey}` to release the reserved slot.
 - **INF-01 (Redis noeviction)**: Prevents Redis from silently evicting rate-limit counters or BullMQ job data under memory pressure.
 - **INF-02 (ngrok)**: Slack OAuth requires `https://` redirect URI. Developer runs `ngrok http 3001` locally and sets `SLACK_REDIRECT_URI` to the ngrok URL.
-- **T-09 (E2E)**: Playwright E2E is SHOULD — implement if time permits after MUST tests pass.
+- **T-09 (E2E)**: A live Ethereal send-check passed for three emails; browser-level Playwright E2E remains SHOULD/not implemented.

@@ -14,6 +14,9 @@ import {
   claimScheduledEmail,
   getOriginalEmailOrderIndex,
   hasRetriesRemaining,
+  isTerminalEmailStatus,
+  releaseProcessingEmail,
+  rescheduleProcessingEmail,
 } from './emailWorkerLogic';
 
 /**
@@ -86,11 +89,7 @@ export function startEmailWorker(): Worker<EmailJobData> {
       }
 
       // Layer 2a: fast-exit if already terminal (idempotency guard)
-      if (email.status === 'SENT') {
-        console.log(`[Worker] job ${job.id}: email ${emailId} already SENT — no-op`);
-        return;
-      }
-      if (email.status === 'CANCELLED' || email.status === 'FAILED') {
+      if (isTerminalEmailStatus(email.status)) {
         console.log(`[Worker] job ${job.id}: email ${emailId} status=${email.status} — no-op`);
         return;
       }
@@ -122,7 +121,10 @@ export function startEmailWorker(): Worker<EmailJobData> {
           minDelayMs,
         );
       } catch (rateLimitError) {
-        await releaseEmailForRetry(emailId);
+        await releaseProcessingEmail(
+          (args) => prisma.email.updateMany(args),
+          emailId,
+        );
         throw rateLimitError;
       }
 
@@ -162,8 +164,13 @@ export function startEmailWorker(): Worker<EmailJobData> {
         console.info(
           `[Worker] Sender ${email.senderId} deferred email ${emailId} (${reservation.reason}) until ${new Date(retryAt).toISOString()}.`,
         );
-        await releaseEmailForRetry(emailId);
-        await job.moveToDelayed(retryAt, job.token);
+        await rescheduleProcessingEmail(
+          (args) => prisma.email.updateMany(args),
+          (timestamp, token) => job.moveToDelayed(timestamp, token),
+          emailId,
+          retryAt,
+          job.token,
+        );
         throw new DelayedError();
       }
 
@@ -199,13 +206,10 @@ export function startEmailWorker(): Worker<EmailJobData> {
 
         if (hasRetriesRemaining(job)) {
           try {
-            const released = await prisma.email.updateMany({
-              where: { id: emailId, status: 'PROCESSING' },
-              data: { status: 'SCHEDULED', processingStartedAt: null },
-            });
-            if (released.count !== 1) {
-              console.warn(`[Worker] Email ${emailId} could not be released for its BullMQ retry.`);
-            }
+            await releaseProcessingEmail(
+              (args) => prisma.email.updateMany(args),
+              emailId,
+            );
           } catch (recoveryError) {
             console.error(
               `[Worker] Could not release email ${emailId} for its BullMQ retry:`,
@@ -277,10 +281,10 @@ export function startEmailWorker(): Worker<EmailJobData> {
         );
 
         try {
-          await prisma.email.updateMany({
-            where: { id: emailId, status: 'PROCESSING' },
-            data: { status: 'SCHEDULED', processingStartedAt: null },
-          });
+          await releaseProcessingEmail(
+            (args) => prisma.email.updateMany(args),
+            emailId,
+          );
         } catch (recoveryError) {
           console.error(
             `[Worker] Could not release email ${emailId} after SENT persistence failed; stale-PROCESSING recovery may reclaim it:`,
@@ -327,17 +331,6 @@ export function startEmailWorker(): Worker<EmailJobData> {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-async function releaseEmailForRetry(emailId: string): Promise<void> {
-  const released = await prisma.email.updateMany({
-    where: { id: emailId, status: 'PROCESSING' },
-    data: { status: 'SCHEDULED', processingStartedAt: null },
-  });
-
-  if (released.count !== 1) {
-    throw new Error(`Email ${emailId} could not be released from PROCESSING.`);
-  }
-}
 
 /**
  * After each terminal email update (SENT or FAILED), check whether all emails

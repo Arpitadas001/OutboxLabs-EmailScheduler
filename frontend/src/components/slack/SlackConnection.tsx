@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { API_BASE_URL } from '../../api/client';
 import { disconnectSlack, fetchSlackStatus } from '../../api/slack';
 
 export default function SlackConnection() {
@@ -50,7 +51,7 @@ export default function SlackConnection() {
   return (
     <a
       className="btn-ghost"
-      href={`${import.meta.env.VITE_API_URL ?? 'http://localhost:3001'}/slack/connect`}
+      href={`${API_BASE_URL}/slack/connect`}
     >
       Connect Slack
     </a>

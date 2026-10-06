@@ -42,6 +42,31 @@ A small full-stack email scheduling demo: React/Vite dashboard, Express API, Pos
 
    The frontend listens on `http://localhost:3000`; the backend listens on `http://localhost:3001`. Vite is configured with `strictPort`, so a second frontend cannot silently occupy the API port. Run the dev command only once.
 
+## Vercel deployment
+
+The root [`vercel.json`](./vercel.json) configures two services: `backend` (Express) and
+`frontend` (Vite). Public `/api` requests go to the backend with the `/api` prefix
+preserved; all other paths go to the frontend. The backend serves both `/api/...`
+routes and the original root routes for local compatibility. The Vite development
+server proxies `/api` to the local backend.
+
+Configure the backend's database, Redis, Elasticsearch, session/encryption, Google
+OAuth, and other required environment variables in Vercel. Configure `FRONTEND_URL`
+to the deployed frontend origin, and register
+`https://<deployment-domain>/api/auth/google/callback` as the Google OAuth callback.
+If Slack OAuth is enabled, use
+`https://<deployment-domain>/api/slack/callback` for its redirect URI. The frontend
+uses the relative `/api` path by default; if setting `VITE_API_URL`, include the
+`/api` prefix (for example, `https://<deployment-domain>/api`).
+
+The frontend makes browser requests through the public `/api` rewrite, so it does
+not need a service binding. PostgreSQL, Redis, and Elasticsearch are external
+infrastructure dependencies, not Vercel application services, and must be
+provisioned separately. The backend also starts a BullMQ worker and startup
+reconciler in its process; verify that the selected Vercel Express runtime can keep
+that worker available for scheduled delivery, or run the worker in a persistent
+worker host before relying on Vercel for email delivery.
+
 ## Environment configuration
 
 | Variable | Purpose |
@@ -112,7 +137,7 @@ npm run typecheck
 npm run build
 ```
 
-The backend test suite includes actual Redis Lua tests for concurrent quota enforcement, check ordering, and slot release, alongside scheduling helper, retry-claim, and Slack encryption/disconnected behavior tests. Redis must be running for the backend suite.
+The backend test suite includes HTTP-level campaign validation, email-list response/pagination, CSV multipart parsing/counts/deduplication, and unauthenticated-access checks. It also tests stale-row reconciliation order, retry-state release, terminal-state idempotency, delayed job movement, queue helper output/recovery, Slack token encryption/disconnected behavior, and real Redis Lua concurrency/check-order/slot-release behavior. The email-list HTTP test injects its read service so it does not write to PostgreSQL. Redis must be running for the backend suite.
 
 Manual end-to-end delivery check (creates a campaign and sends three Ethereal test messages; run only when that database and SMTP test traffic are acceptable):
 

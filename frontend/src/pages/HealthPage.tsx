@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
+import api from '../api/client';
 
 export default function HealthPage() {
-  const [health, setHealth] = useState<any>(null);
+  const [health, setHealth] = useState<Record<string, string> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('http://localhost:3001/health/dependencies')
-      .then(res => res.json())
-      .then(data => setHealth(data))
+    api.get<Record<string, string>>('/health/dependencies')
+      .then(response => setHealth(response.data))
       .catch(err => setError(err.message));
   }, []);
 

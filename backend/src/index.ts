@@ -68,20 +68,22 @@ async function bootstrap() {
     }),
   );
 
-  // ── Routes ───────────────────────────────────────────────────────────────────
-  app.use('/auth', authRouter);
-  app.use('/campaigns', campaignsRouter);
-  app.use('/emails', emailsRouter);
-  app.use('/csv', csvRouter);
-  app.use('/search', searchRouter);
-  app.use('/slack', slackRouter);
-  app.use('/admin/queues', queueDashboardRouter);
+  // Vercel routes API requests with the original /api prefix. Keep root mounts
+  // as aliases for existing local clients and integrations.
+  const apiRouter = express.Router();
+  apiRouter.use('/auth', authRouter);
+  apiRouter.use('/campaigns', campaignsRouter);
+  apiRouter.use('/emails', emailsRouter);
+  apiRouter.use('/csv', csvRouter);
+  apiRouter.use('/search', searchRouter);
+  apiRouter.use('/slack', slackRouter);
+  apiRouter.use('/admin/queues', queueDashboardRouter);
 
-  app.get('/health', (_req, res) => {
+  apiRouter.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok', message: 'Backend is up' });
   });
 
-  app.get('/health/dependencies', async (_req, res) => {
+  apiRouter.get('/health/dependencies', async (_req, res) => {
     // Will be expanded in later phases with real DB + ES health checks
     res.status(200).json({
       postgres: 'ok',
@@ -89,6 +91,9 @@ async function bootstrap() {
       elasticsearch: 'ok',
     });
   });
+
+  app.use('/api', apiRouter);
+  app.use(apiRouter);
 
   // ── Start ────────────────────────────────────────────────────────────────────
   app.listen(env.PORT, () => {

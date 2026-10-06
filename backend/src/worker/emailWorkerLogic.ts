@@ -7,6 +7,22 @@ interface EmailClaimArgs {
   };
 }
 
+interface ProcessingEmailUpdateArgs {
+  where: { id: string; status: 'PROCESSING' };
+  data: { status: 'SCHEDULED'; processingStartedAt: null };
+}
+
+export type EmailStatusForWorker =
+  | 'SCHEDULED'
+  | 'PROCESSING'
+  | 'SENT'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export function isTerminalEmailStatus(status: EmailStatusForWorker): boolean {
+  return status === 'SENT' || status === 'FAILED' || status === 'CANCELLED';
+}
+
 export async function claimScheduledEmail(
   updateMany: (args: EmailClaimArgs) => Promise<{ count: number }>,
   emailId: string,
@@ -22,6 +38,31 @@ export async function claimScheduledEmail(
   });
 
   return count === 1;
+}
+
+export async function releaseProcessingEmail(
+  updateMany: (args: ProcessingEmailUpdateArgs) => Promise<{ count: number }>,
+  emailId: string,
+): Promise<void> {
+  const result = await updateMany({
+    where: { id: emailId, status: 'PROCESSING' },
+    data: { status: 'SCHEDULED', processingStartedAt: null },
+  });
+
+  if (result.count !== 1) {
+    throw new Error(`Email ${emailId} could not be released from PROCESSING.`);
+  }
+}
+
+export async function rescheduleProcessingEmail(
+  updateMany: (args: ProcessingEmailUpdateArgs) => Promise<{ count: number }>,
+  moveToDelayed: (timestamp: number, token: string | undefined) => Promise<unknown>,
+  emailId: string,
+  retryAt: number,
+  token: string | undefined,
+): Promise<void> {
+  await releaseProcessingEmail(updateMany, emailId);
+  await moveToDelayed(retryAt, token);
 }
 
 export interface EmailJobAttempt {

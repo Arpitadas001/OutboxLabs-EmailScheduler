@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { claimScheduledEmail, hasRetriesRemaining } from '../src/worker/emailWorkerLogic';
+import {
+  claimScheduledEmail,
+  hasRetriesRemaining,
+  isTerminalEmailStatus,
+  releaseProcessingEmail,
+  rescheduleProcessingEmail,
+} from '../src/worker/emailWorkerLogic';
 
 test('only one concurrent worker can claim a SCHEDULED email', async () => {
   const status = { value: 'SCHEDULED' };
@@ -36,4 +42,66 @@ test('retry remains eligible until the configured final attempt', () => {
   assert.equal(hasRetriesRemaining({ attemptsMade: 1, opts: { attempts: 3 } }), true);
   assert.equal(hasRetriesRemaining({ attemptsMade: 2, opts: { attempts: 3 } }), false);
   assert.equal(hasRetriesRemaining({ attemptsMade: 0, opts: {} }), false);
+});
+
+test('SMTP retry releases PROCESSING back to SCHEDULED before retrying', async () => {
+  let status = 'PROCESSING';
+  await releaseProcessingEmail(async (args) => {
+    assert.deepEqual(args, {
+      where: { id: 'email-retry', status: 'PROCESSING' },
+      data: { status: 'SCHEDULED', processingStartedAt: null },
+    });
+    if (status !== args.where.status) return { count: 0 };
+    status = args.data.status;
+    return { count: 1 };
+  }, 'email-retry');
+
+  assert.equal(status, 'SCHEDULED');
+});
+
+test('rate-limited email is released and moved to the requested delayed timestamp', async () => {
+  let status = 'PROCESSING';
+  let movedTo: { timestamp: number; token: string | undefined } | undefined;
+
+  await rescheduleProcessingEmail(
+    async (args) => {
+      assert.deepEqual(args.where, { id: 'email-deferred', status: 'PROCESSING' });
+      status = args.data.status;
+      return { count: 1 };
+    },
+    async (timestamp, token) => {
+      movedTo = { timestamp, token };
+    },
+    'email-deferred',
+    1_798_000_000_000,
+    'lock-token',
+  );
+
+  assert.equal(status, 'SCHEDULED');
+  assert.deepEqual(movedTo, { timestamp: 1_798_000_000_000, token: 'lock-token' });
+});
+
+test('a failed release prevents moving the BullMQ job', async () => {
+  let moveAttempted = false;
+  await assert.rejects(
+    rescheduleProcessingEmail(
+      async () => ({ count: 0 }),
+      async () => {
+        moveAttempted = true;
+      },
+      'email-not-processing',
+      Date.now() + 60_000,
+      'lock-token',
+    ),
+    /could not be released from PROCESSING/,
+  );
+  assert.equal(moveAttempted, false);
+});
+
+test('terminal email states are idempotent no-ops', () => {
+  assert.equal(isTerminalEmailStatus('SENT'), true);
+  assert.equal(isTerminalEmailStatus('FAILED'), true);
+  assert.equal(isTerminalEmailStatus('CANCELLED'), true);
+  assert.equal(isTerminalEmailStatus('SCHEDULED'), false);
+  assert.equal(isTerminalEmailStatus('PROCESSING'), false);
 });

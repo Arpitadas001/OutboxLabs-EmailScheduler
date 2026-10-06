@@ -1,4 +1,5 @@
 import { Outlet, Link, NavLink } from 'react-router-dom';
+import { API_BASE_URL } from '../../api/client';
 import UserAvatar from './UserAvatar';
 
 /**
@@ -44,7 +45,7 @@ export default function AppShell() {
               <NavLink to="/search" className={navLinkClass}>Search</NavLink>
               <NavLink to="/health" className={navLinkClass}>Health</NavLink>
               <a
-                href={`${import.meta.env.VITE_API_URL ?? 'http://localhost:3001'}/admin/queues`}
+                href={`${API_BASE_URL}/admin/queues`}
                 className="px-3 py-2 rounded-lg text-sm font-medium text-gray-400 hover:text-gray-100 hover:bg-gray-800"
               >
                 Queues
