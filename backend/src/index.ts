@@ -60,12 +60,15 @@ async function bootstrap() {
       secret: env.SESSION_SECRET,
       resave: false,
       saveUninitialized: false,
-      cookie: (req) => ({
-        httpOnly: true, // prevents XSS from reading the cookie
-        secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-        sameSite: 'lax',
-      }),
+      cookie: (req) => {
+        const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+        return {
+          httpOnly: true, // prevents XSS from reading the cookie
+          secure: isHttps,
+          maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+          sameSite: isHttps ? 'none' : 'lax',
+        };
+      },
     }),
   );
 
