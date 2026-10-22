@@ -30,6 +30,22 @@ function sleep(ms: number): Promise<void> {
 async function main() {
   console.log('🌱 Seeding Sender accounts via Ethereal...');
 
+  // Remove any senders with blank credentials that may have been inserted
+  // by a failed or interrupted seed run — these cause SMTP failures at send time.
+  const cleaned = await prisma.sender.deleteMany({
+    where: {
+      OR: [
+        { smtpHost: '' },
+        { smtpUser: '' },
+        { smtpPass: '' },
+        { fromEmail: '' },
+      ],
+    },
+  });
+  if (cleaned.count > 0) {
+    console.log(`  🧹 Removed ${cleaned.count} invalid sender(s) with blank credentials.`);
+  }
+
   const SENDER_COUNT = 3;
   const seenEmails = new Set<string>();
 

@@ -16,10 +16,12 @@ export interface Campaign {
   name: string;
   subject: string;
   status: CampaignStatus;
-  startAt: string; // ISO datetime
+  startAt: string;
   totalEmails: number;
   sentCount: number;
   failedCount: number;
+  /** Live count of emails in SCHEDULED or PROCESSING state (from DB). */
+  queuedCount: number;
   delaySeconds: number;
   hourlyLimit: number;
   createdAt: string;
@@ -31,7 +33,7 @@ export interface CreateCampaignPayload {
   subject: string;
   body: string;
   emails: string[];
-  startAt: string; // ISO datetime
+  startAt: string;
   delaySeconds: number;
   hourlyLimit: number;
 }
@@ -58,7 +60,7 @@ export interface EmailsPage {
 
 // ── API calls ─────────────────────────────────────────────────────────────────
 
-/** Fetch all campaigns for the current user. */
+/** Fetch all campaigns for the current user (includes live queuedCount). */
 export async function fetchCampaigns(): Promise<Campaign[]> {
   const res = await api.get<Campaign[]>('/campaigns');
   return res.data;
@@ -67,6 +69,12 @@ export async function fetchCampaigns(): Promise<Campaign[]> {
 /** Create a new campaign and its scheduled email rows. */
 export async function createCampaign(payload: CreateCampaignPayload): Promise<Campaign> {
   const res = await api.post<Campaign>('/campaigns', payload);
+  return res.data;
+}
+
+/** Cancel a campaign — marks all pending emails CANCELLED and removes BullMQ jobs. */
+export async function cancelCampaign(campaignId: string): Promise<{ cancelled: number }> {
+  const res = await api.delete<{ cancelled: number }>(`/campaigns/${campaignId}`);
   return res.data;
 }
 
@@ -82,6 +90,7 @@ export async function fetchCampaignEmails(
   return res.data;
 }
 
+/** Fetch paginated scheduled or sent emails across all campaigns. */
 export async function fetchEmails(
   view: 'scheduled' | 'sent',
   page = 1,

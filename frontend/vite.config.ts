@@ -7,10 +7,13 @@ export default defineConfig({
   server: {
     port: 3000,
     strictPort: true,
+    allowedHosts: true,
     proxy: {
-      '/api': {
-        target: 'http://localhost:3001',
-      },
+      '/api': { target: 'http://localhost:3001', changeOrigin: true },
+      '/auth': { target: 'http://localhost:3001', changeOrigin: true },
+      '/slack': { target: 'http://localhost:3001', changeOrigin: true },
+      '/health': { target: 'http://localhost:3001', changeOrigin: true },
+      '/admin': { target: 'http://localhost:3001', changeOrigin: true },
     },
   },
 })

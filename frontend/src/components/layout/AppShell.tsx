@@ -2,64 +2,107 @@ import { Outlet, Link, NavLink } from 'react-router-dom';
 import { API_BASE_URL } from '../../api/client';
 import UserAvatar from './UserAvatar';
 
-/**
- * AppShell — the authenticated app frame.
- *
- * Layout:
- *   - Top bar: logo · nav links · UserAvatar (name + picture + logout)
- *   - Main: <Outlet /> renders the active page
- *
- * Only rendered inside ProtectedRoute so we can safely assume a session exists.
- */
+const NAV_ITEMS = [
+  { to: '/', end: true, label: 'Dashboard', icon: '◈' },
+  { to: '/compose', end: false, label: 'Compose', icon: '✦' },
+  { to: '/search', end: false, label: 'Search', icon: '⌕' },
+  { to: '/health', end: false, label: 'Health', icon: '◉' },
+];
+
 export default function AppShell() {
-  const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-    [
-      'px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150',
-      isActive
-        ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
-        : 'text-gray-400 hover:text-gray-100 hover:bg-gray-800',
-    ].join(' ');
-
   return (
-    <div className="min-h-screen bg-gray-950 flex flex-col">
-      {/* ── Top bar ──────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-30 bg-gray-900/80 backdrop-blur border-b border-gray-800">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16 items-center">
-            {/* Logo */}
-            <Link to="/" className="flex items-center gap-2 group">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20 group-hover:shadow-indigo-500/40 transition-shadow">
-                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-              </div>
-              <span className="text-lg font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
-                OutboxLabs
-              </span>
-            </Link>
+    <div style={{ minHeight: '100vh', background: '#030712', display: 'flex', flexDirection: 'column' }}>
+      {/* ── Top bar ─────────────────────────────────────────────────────── */}
+      <header style={{
+        position: 'sticky', top: 0, zIndex: 30,
+        background: 'rgba(3,7,18,0.8)',
+        backdropFilter: 'blur(20px)',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        boxShadow: '0 1px 0 rgba(255,255,255,0.04)',
+      }}>
+        <div style={{
+          maxWidth: '80rem', margin: '0 auto',
+          padding: '0 1.5rem',
+          display: 'flex', justifyContent: 'space-between',
+          alignItems: 'center', height: '3.75rem',
+          gap: '1rem',
+        }}>
+          {/* Logo */}
+          <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', textDecoration: 'none' }}>
+            <div style={{
+              width: '2rem', height: '2rem', borderRadius: '0.5rem',
+              background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 0 12px rgba(99,102,241,0.35)',
+              flexShrink: 0,
+            }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <span style={{
+              fontSize: '1.05rem', fontWeight: 800,
+              background: 'linear-gradient(135deg, #f9fafb 30%, #a5b4fc 100%)',
+              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+              backgroundClip: 'text', letterSpacing: '-0.02em',
+            }}>
+              OutboxLabs
+            </span>
+          </Link>
 
-            {/* Nav */}
-            <nav className="flex items-center gap-1">
-              <NavLink to="/" end className={navLinkClass}>Dashboard</NavLink>
-              <NavLink to="/compose" className={navLinkClass}>Compose</NavLink>
-              <NavLink to="/search" className={navLinkClass}>Search</NavLink>
-              <NavLink to="/health" className={navLinkClass}>Health</NavLink>
-              <a
-                href={`${API_BASE_URL}/admin/queues`}
-                className="px-3 py-2 rounded-lg text-sm font-medium text-gray-400 hover:text-gray-100 hover:bg-gray-800"
+          {/* Nav */}
+          <nav style={{ display: 'flex', alignItems: 'center', gap: '0.125rem' }}>
+            {NAV_ITEMS.map(({ to, end, label }) => (
+              <NavLink
+                key={to}
+                to={to}
+                end={end}
+                style={({ isActive }) => ({
+                  padding: '0.45rem 0.875rem',
+                  borderRadius: '0.5rem',
+                  fontSize: '0.875rem',
+                  fontWeight: isActive ? 600 : 500,
+                  textDecoration: 'none',
+                  transition: 'all 0.15s ease',
+                  color: isActive ? '#a5b4fc' : '#9ca3af',
+                  background: isActive ? 'rgba(99,102,241,0.12)' : 'transparent',
+                  border: isActive ? '1px solid rgba(99,102,241,0.25)' : '1px solid transparent',
+                })}
               >
-                Queues
-              </a>
-            </nav>
+                {label}
+              </NavLink>
+            ))}
+            <a
+              href={`${API_BASE_URL}/admin/queues`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                padding: '0.45rem 0.875rem', borderRadius: '0.5rem',
+                fontSize: '0.875rem', fontWeight: 500, textDecoration: 'none',
+                color: '#9ca3af', border: '1px solid transparent',
+                transition: 'all 0.15s ease', display: 'inline-flex', alignItems: 'center', gap: '0.375rem',
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#e5e7eb'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = '#9ca3af'; }}
+            >
+              Queues
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor" style={{ opacity: 0.5 }}>
+                <path d="M3.5 3a.5.5 0 000 1H7.3L2.15 9.15a.5.5 0 00.7.7L8 4.7V8.5a.5.5 0 001 0V3a.5.5 0 00-.5-.5H3.5z"/>
+              </svg>
+            </a>
+          </nav>
 
-            {/* User info + logout */}
-            <UserAvatar />
-          </div>
+          {/* User */}
+          <UserAvatar />
         </div>
       </header>
 
-      {/* ── Page content ─────────────────────────────────────────────── */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* ── Page content ──────────────────────────────────────────────── */}
+      <main style={{
+        flex: 1, maxWidth: '80rem', width: '100%',
+        margin: '0 auto', padding: '2rem 1.5rem',
+        position: 'relative', zIndex: 1,
+      }}>
         <Outlet />
       </main>
     </div>

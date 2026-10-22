@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { emailQueue } from '../lib/queue';
 import { enqueueScheduledEmailJobs } from '../lib/emailJobs';
-import { indexCampaignEmails } from '../lib/emailSearch';
+import { indexCampaignEmails, indexEmail } from '../lib/emailSearch';
 import { requireAuth } from '../middleware/requireAuth';
 import { z } from 'zod';
 
@@ -164,9 +164,86 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       },
     });
 
-    res.json(campaigns);
+    // Add live queuedCount (SCHEDULED + PROCESSING) per campaign
+    const campaignIds = campaigns.map((c) => c.id);
+    const queuedCounts = await prisma.email.groupBy({
+      by: ['campaignId'],
+      where: {
+        campaignId: { in: campaignIds },
+        status: { in: ['SCHEDULED', 'PROCESSING'] },
+      },
+      _count: { id: true },
+    });
+    const queuedMap = Object.fromEntries(
+      queuedCounts.map((row) => [row.campaignId, row._count.id]),
+    );
+
+    res.json(campaigns.map((c) => ({ ...c, queuedCount: queuedMap[c.id] ?? 0 })));
   } catch (err) {
     console.error('[Campaigns] GET /campaigns error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── DELETE /campaigns/:id (cancel) ────────────────────────────────────────────
+
+router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  try {
+    // Verify ownership
+    const campaign = await prisma.campaign.findFirst({
+      where: { id, userId: req.session.userId },
+      select: { id: true, status: true },
+    });
+
+    if (!campaign) {
+      res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+
+    if (campaign.status === 'COMPLETED' || campaign.status === 'CANCELLED') {
+      res.status(409).json({ error: `Campaign is already ${campaign.status.toLowerCase()}.` });
+      return;
+    }
+
+    // Find all cancellable emails (SCHEDULED or PROCESSING)
+    const emailsToCancel = await prisma.email.findMany({
+      where: { campaignId: id, status: { in: ['SCHEDULED', 'PROCESSING'] } },
+      select: { id: true, jobId: true },
+    });
+
+    // Atomically mark all cancellable emails as CANCELLED and update campaign status
+    await prisma.$transaction(async (tx) => {
+      if (emailsToCancel.length > 0) {
+        await tx.email.updateMany({
+          where: { campaignId: id, status: { in: ['SCHEDULED', 'PROCESSING'] } },
+          data: { status: 'CANCELLED', processingStartedAt: null },
+        });
+      }
+      await tx.campaign.update({
+        where: { id },
+        data: { status: 'CANCELLED' },
+      });
+    });
+
+    // Remove BullMQ jobs (best-effort — jobs may already be picked up)
+    const removedCount = (await Promise.allSettled(
+      emailsToCancel.map(async (email) => {
+        const job = await emailQueue.getJob(email.jobId);
+        if (job) await job.remove();
+      }),
+    )).filter((r) => r.status === 'fulfilled').length;
+    console.log(`[Campaigns] Cancelled campaign ${id}: ${emailsToCancel.length} emails cancelled, ${removedCount} BullMQ jobs removed.`);
+
+    // Re-index cancelled emails in Elasticsearch (best-effort)
+    void Promise.allSettled(
+      emailsToCancel.map((email) => indexEmail(email.id)),
+    ).catch(() => {});
+
+    res.status(200).json({ cancelled: emailsToCancel.length });
+  } catch (err) {
+    console.error('[Campaigns] DELETE /campaigns/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

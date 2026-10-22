@@ -32,6 +32,7 @@ import slackRouter from './routes/slack';
 
 async function bootstrap() {
   const app = express();
+  app.set('trust proxy', 1);
 
   // ── Redis session store ──────────────────────────────────────────────────────
   // We use the node-redis v4 client (not ioredis) here because connect-redis@7
@@ -59,12 +60,12 @@ async function bootstrap() {
       secret: env.SESSION_SECRET,
       resave: false,
       saveUninitialized: false,
-      cookie: {
+      cookie: (req) => ({
         httpOnly: true, // prevents XSS from reading the cookie
-        secure: env.NODE_ENV === 'production', // HTTPS-only in prod
+        secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
         sameSite: 'lax',
-      },
+      }),
     }),
   );
 
@@ -84,12 +85,45 @@ async function bootstrap() {
   });
 
   apiRouter.get('/health/dependencies', async (_req, res) => {
-    // Will be expanded in later phases with real DB + ES health checks
-    res.status(200).json({
-      postgres: 'ok',
-      redis: 'ok',
-      elasticsearch: 'ok',
-    });
+    const results: Record<string, string> = {};
+
+    // PostgreSQL check via Prisma
+    try {
+      const { PrismaClient } = await import('@prisma/client');
+      const testPrisma = new PrismaClient();
+      await testPrisma.$queryRaw`SELECT 1`;
+      await testPrisma.$disconnect();
+      results.postgres = 'ok';
+    } catch (e) {
+      results.postgres = e instanceof Error ? e.message : 'unreachable';
+    }
+
+    // Redis check via redisClient already connected
+    try {
+      const pong = await redisClient.ping();
+      results.redis = pong === 'PONG' ? 'ok' : `unexpected: ${pong}`;
+    } catch (e) {
+      results.redis = e instanceof Error ? e.message : 'unreachable';
+    }
+
+    // Elasticsearch check
+    try {
+      const { env: envConfig } = await import('./config/env');
+      const esRes = await fetch(`${envConfig.ELASTICSEARCH_URL.replace(/\/$/, '')}/_cluster/health`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (esRes.ok) {
+        const data = await esRes.json() as { status?: string };
+        results.elasticsearch = data.status === 'green' || data.status === 'yellow' ? 'ok' : `status: ${data.status}`;
+      } else {
+        results.elasticsearch = `HTTP ${esRes.status}`;
+      }
+    } catch (e) {
+      results.elasticsearch = e instanceof Error ? e.message : 'unreachable';
+    }
+
+    const httpStatus = Object.values(results).every((v) => v === 'ok') ? 200 : 503;
+    res.status(httpStatus).json(results);
   });
 
   app.use('/api', apiRouter);
