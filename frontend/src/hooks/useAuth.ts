@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import api from '../api/client';
+import api, { API_ORIGIN } from '../api/client';
 
 export interface User {
   id: string;
@@ -43,14 +43,12 @@ export function useAuth() {
  * Google's OAuth redirect goes to the backend, not the frontend.
  */
 export function loginWithGoogle() {
-  const authBaseURL = import.meta.env.VITE_API_URL?.replace(/\/$/, '') ?? '';
-  window.location.href = `${authBaseURL}/auth/google`;
+  window.location.href = `${API_ORIGIN}/auth/google`;
 }
 
 /**
  * Logout by navigating to /auth/logout (backend destroys session + redirects).
  */
 export function logout() {
-  const authBaseURL = import.meta.env.VITE_API_URL?.replace(/\/$/, '') ?? '';
-  window.location.href = `${authBaseURL}/auth/logout`;
+  window.location.href = `${API_ORIGIN}/auth/logout`;
 }
